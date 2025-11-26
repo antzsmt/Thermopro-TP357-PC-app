@@ -1,13 +1,13 @@
-// Atribut pro skrytí konzolového okna ve finální verzi (v release buildu)
+// Attribute to hide the console window in the final release (release build)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// --- Importy ---
+// --- Imports ---
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral, ScanFilter};
 use btleplug::platform::Manager;
 use chrono::{DateTime, Local, NaiveDateTime};
 use eframe::egui;
 use egui_extras::{StripBuilder, Size};
-// OPRAVA: Odstraněn nepoužívaný PlotPoint
+// FIX: Removed unused PlotPoint
 use egui_plot::PlotMemory;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -22,11 +22,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 use log::{info, warn, error, debug};
 
-// --- Konstanty a Konfigurace ---
+// --- Constants and configuration ---
 const MAX_HISTORY_POINTS: usize = 200;
 const CONFIG_FILE: &str = "config.json";
 
-// --- DATOVÉ STRUKTURY ---
+// --- Data structures ---
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 struct Config {
@@ -84,7 +84,7 @@ impl Default for TempMonitorApp {
         let (_tx, rx) = mpsc::channel();
         Self {
             config: load_config(), settings_open: false, rx, shared_config: Arc::new(Mutex::new(Config::default())),
-            history: VecDeque::new(), last_data_point: None, last_csv_write_ok: true, scan_status: "Inicializace...".to_string(),
+            history: VecDeque::new(), last_data_point: None, last_csv_write_ok: true, scan_status: "Initializing...".to_string(),
             zoom_factor: 1.0, reset_plot: false, background_processor: None, config_changed: false,
             toast_message: None,
         }
@@ -93,7 +93,7 @@ impl Default for TempMonitorApp {
 
 impl TempMonitorApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        info!("Vytváření nové instance aplikace TempMonitorApp.");
+        info!("Creating new TempMonitorApp instance.");
         let mut app: Self = if let Some(storage) = cc.storage { eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default() } else { Default::default() };
         let (gui_tx, gui_rx) = mpsc::channel(); let (scanner_tx, processor_rx) = mpsc::channel();
         app.rx = gui_rx;
@@ -102,8 +102,8 @@ impl TempMonitorApp {
         let processor_shared_config = shared_config.clone();
         let processor = thread::spawn(move || { background_data_processor(processor_rx, gui_tx, processor_shared_config); });
         app.background_processor = Some(processor);
-        info!("Spouštím Bluetooth scanner v asynchronním vlákně.");
-        let rt = tokio::runtime::Runtime::new().expect("Nelze vytvořit Tokio runtime");
+        info!("Starting Bluetooth scanner in an asynchronous thread.");
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         rt.spawn(bluetooth_scanner(scanner_tx, shared_config));
         std::mem::forget(rt);
         app.history = load_history_from_csv();
@@ -111,7 +111,7 @@ impl TempMonitorApp {
     }
 
     fn add_data_point(&mut self, data: BleDataPoint) {
-        debug!("Aktualizuji UI s novým datovým bodem: {:?}", data);
+        debug!("Updating UI with new data point: {:?}", data);
         let limit = if self.config.load_all_history { usize::MAX } else { MAX_HISTORY_POINTS };
         while self.history.len() >= limit { self.history.pop_front(); }
         let history_point = HistoryPoint { timestamp: data.timestamp, temp: data.temp, hum: data.hum };
@@ -120,12 +120,12 @@ impl TempMonitorApp {
     }
 }
 
-// --- Logika GUI ---
+// --- GUI logic ---
 impl eframe::App for TempMonitorApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
         if self.config_changed {
-            info!("Změna v konfiguraci detekována, ukládám do souboru.");
+            info!("Configuration change detected, saving to file.");
             save_config(&self.config);
             self.config_changed = false;
         }
@@ -136,7 +136,7 @@ impl eframe::App for TempMonitorApp {
         while let Ok(message) = self.rx.try_recv() {
             match message {
                 AppMessage::NewData(data_point) => self.add_data_point(data_point),
-                AppMessage::StatusUpdate(status) => { debug!("Aktualizace stavu skeneru: {}", status); self.scan_status = status; },
+                AppMessage::StatusUpdate(status) => { debug!("Scanner status update: {}", status); self.scan_status = status; },
                 AppMessage::CsvWriteStatus(ok) => self.last_csv_write_ok = ok,
             }
         }
@@ -145,17 +145,17 @@ impl eframe::App for TempMonitorApp {
         ctx.set_visuals(visual);
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("Soubor", |ui| {
-                    if ui.button("Nastavení").clicked() { self.settings_open = true; ui.close_menu(); }
-                    if ui.button("Ukončit").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+                ui.menu_button("File", |ui| {
+                    if ui.button("Settings").clicked() { self.settings_open = true; ui.close_menu(); }
+                    if ui.button("Quit").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
                 });
                 ui.separator();
-                if ui.button("➖").on_hover_text("Oddálit").clicked() { self.zoom_factor = 0.7; }
-                if ui.button("➕").on_hover_text("Přiblížit").clicked() { self.zoom_factor = 1.25; }
-                if ui.button("⛶").on_hover_text("Vycentrovat graf").clicked() { self.reset_plot = true; }
+                if ui.button("➖").on_hover_text("Zoom out").clicked() { self.zoom_factor = 0.7; }
+                if ui.button("➕").on_hover_text("Zoom in").clicked() { self.zoom_factor = 1.25; }
+                if ui.button("⛶").on_hover_text("Center plot").clicked() { self.reset_plot = true; }
             });
         });
-        if self.reset_plot { info!("Resetuji pohled grafů."); ctx.memory_mut(|memory| { memory.data.remove::<PlotMemory>(egui::Id::new("linked_plots")); }); }
+        if self.reset_plot { info!("Resetting plot view."); ctx.memory_mut(|memory| { memory.data.remove::<PlotMemory>(egui::Id::new("linked_plots")); }); }
         
         egui::CentralPanel::default().show(ctx, |ui| {
             StripBuilder::new(ui)
@@ -167,9 +167,9 @@ impl eframe::App for TempMonitorApp {
                         columns[2].vertical(|ui| draw_scan_metadata(ui, &self.last_data_point, &self.scan_status));
                         columns[3].vertical(|ui| draw_data_details(ui, &self.last_data_point, self.last_csv_write_ok));
                     });});
-                    strip.cell(|ui| { ui.label(egui::RichText::new("Teplota").size(14.0).strong()); draw_temperature_graph(self, ui, ctx); });
-                    strip.cell(|ui| { ui.label(egui::RichText::new("Vlhkost").size(14.0).strong()); draw_humidity_graph(self, ui, ctx); });
-                    strip.cell(|ui| { ui.separator(); ui.vertical_centered(|ui| { ui.horizontal_centered(|ui| { ui.label(egui::RichText::new(format!("Autorem aplikace je Soběslav Holec")).size(20.0).color(egui::Color32::WHITE)); });});});
+                    strip.cell(|ui| { ui.label(egui::RichText::new("Temperature").size(14.0).strong()); draw_temperature_graph(self, ui, ctx); });
+                    strip.cell(|ui| { ui.label(egui::RichText::new("Humidity").size(14.0).strong()); draw_humidity_graph(self, ui, ctx); });
+                    strip.cell(|ui| { ui.separator(); ui.vertical_centered(|ui| { ui.horizontal_centered(|ui| { ui.label(egui::RichText::new(format!("Author: Soběslav Holec")).size(20.0).color(egui::Color32::WHITE)); });});});
                 });
         });
 
@@ -196,47 +196,47 @@ impl TempMonitorApp {
         if self.settings_open {
             let mut is_open = self.settings_open;
             let old_config = self.config.clone();
-            egui::Window::new("Nastavení").open(&mut is_open).show(ctx, |ui| {
-                ui.label("Cílová MAC adresa:"); ui.text_edit_singleline(&mut self.config.target_mac);
+            egui::Window::new("Settings").open(&mut is_open).show(ctx, |ui| {
+                ui.label("Target MAC address:"); ui.text_edit_singleline(&mut self.config.target_mac);
                 ui.separator();
-                ui.add(egui::DragValue::new(&mut self.config.scan_timeout_secs).prefix("Timeout skenování (s): "));
-                ui.add(egui::DragValue::new(&mut self.config.scan_pause_secs).prefix("Pauza mezi skeny (s): "));
+                ui.add(egui::DragValue::new(&mut self.config.scan_timeout_secs).prefix("Scan timeout (s): "));
+                ui.add(egui::DragValue::new(&mut self.config.scan_pause_secs).prefix("Pause between scans (s): "));
                 ui.separator();
-                ui.add(egui::DragValue::new(&mut self.config.duplicate_threshold_secs).prefix("Interval pro duplikáty (s): "));
-                ui.label("Záznamy ze stejného zařízení budou ignorovány po tuto dobu.");
+                ui.add(egui::DragValue::new(&mut self.config.duplicate_threshold_secs).prefix("Duplicate interval (s): "));
+                ui.label("Records from the same device will be ignored for this duration.");
                 ui.separator();
-                ui.checkbox(&mut self.config.continuous_mode, "Kontinuální režim");
-                ui.label("⚠️ Kontinuální režim pouze zrychluje skenování, stále platí interval pro duplikáty.");
+                ui.checkbox(&mut self.config.continuous_mode, "Continuous mode");
+                ui.label("⚠️ Continuous mode only speeds up scanning; duplicate interval still applies.");
                 ui.separator();
-                ui.checkbox(&mut self.config.load_all_history, "Načíst kompletní historii z CSV při startu");
-                ui.label("⚠️ Restartujte aplikaci, aby se změna projevila.");
-                if self.config.load_all_history { ui.label(egui::RichText::new("POZOR: Může zpomalit start.").color(egui::Color32::YELLOW)); }
+                ui.checkbox(&mut self.config.load_all_history, "Load full history from CSV on startup");
+                ui.label("⚠️ Restart the application for changes to take effect.");
+                if self.config.load_all_history { ui.label(egui::RichText::new("WARNING: May slow down startup.").color(egui::Color32::YELLOW)); }
                 ui.separator();
-                ui.add(egui::DragValue::new(&mut self.config.temp_warn_high).prefix("Mez pro varování (°C): ").speed(0.1));
-                ui.add(egui::DragValue::new(&mut self.config.temp_warn_low).prefix("Spodní mez (°C): ").speed(0.1));
+                ui.add(egui::DragValue::new(&mut self.config.temp_warn_high).prefix("Warning threshold (°C): ").speed(0.1));
+                ui.add(egui::DragValue::new(&mut self.config.temp_warn_low).prefix("Lower threshold (°C): ").speed(0.1));
             });
             if !is_open || self.config != old_config {
-                if self.config != old_config { info!("Detekována změna v nastavení."); self.config_changed = true; }
-                if let Ok(mut shared) = self.shared_config.lock() { *shared = self.config.clone(); debug!("Sdílená konfigurace byla aktualizována."); }
+                if self.config != old_config { info!("Configuration change detected."); self.config_changed = true; }
+                if let Ok(mut shared) = self.shared_config.lock() { *shared = self.config.clone(); debug!("Shared configuration updated."); }
             }
             self.settings_open = is_open;
         }
     }
 }
 
-// --- Pomocná funkce: mapování hodnot na barvu ---
-// 0.0 → modrá, ~0.33 → zelená, ~0.66 → oranžová, 1.0 → červená
+// --- Helper: map values to color ---
+// 0.0 → blue, ~0.33 → green, ~0.66 → orange, 1.0 → red
 fn value_to_color(value: f64, min: f64, max: f64) -> egui::Color32 {
     let t = ((value - min) / (max - min)).clamp(0.0, 1.0);
 
     if t < 0.33 {
-        // modrá → zelená
+        // blue → green
         egui::Color32::from_rgb(0, (t * 3.0 * 255.0) as u8, 255)
     } else if t < 0.66 {
-        // zelená → oranžová
+        // green → orange
         egui::Color32::from_rgb(0, 255, 255 - ((t - 0.33) * 3.0 * 255.0) as u8)
     } else {
-        // oranžová → červená
+        // orange → red
         egui::Color32::from_rgb(255, 255 - ((t - 0.66) * 3.0 * 255.0) as u8, 0)
     }
 }
@@ -245,18 +245,18 @@ fn humidity_to_color(value: f64, min: f64, max: f64) -> egui::Color32 {
     let t = ((value - min) / (max - min)).clamp(0.0, 1.0);
 
     if t < 0.33 {
-        // červená → oranžová
+        // red → orange
         egui::Color32::from_rgb(255, (t * 3.0 * 255.0) as u8, 0)
     } else if t < 0.66 {
-        // oranžová → zelená
+        // orange → green
         egui::Color32::from_rgb(255 - ((t - 0.33) * 3.0 * 255.0) as u8, 255, 0)
     } else {
-        // zelená → modrá
+        // green → blue
         egui::Color32::from_rgb(0, 255 - ((t - 0.66) * 3.0 * 255.0) as u8, 255)
     }
 }
 
-// --- Vykreslovací funkce ---
+// --- Rendering functions ---
 
 fn draw_temperature_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egui::Context) {
     use egui_plot::{GridMark, Line, Plot, Points, PlotPoints};
@@ -266,7 +266,7 @@ fn draw_temperature_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egu
     let mut plot = Plot::new("temperature_plot").height(ui.available_height()).width(ui.available_width())
         .link_axis(egui::Id::new("linked_plots"), true, false).show_background(false).allow_drag(true).allow_zoom(true)
         .auto_bounds(egui::Vec2b::new(true, true)).show_x(false)
-        .label_formatter(|_name, value| { let time = DateTime::from_timestamp(value.x as i64, 0).unwrap_or_default().with_timezone(&Local); format!("Čas: {}\nTeplota: {:.1}°C", time.format("%H:%M:%S"), value.y) })
+        .label_formatter(|_name, value| { let time = DateTime::from_timestamp(value.x as i64, 0).unwrap_or_default().with_timezone(&Local); format!("Time: {}\nTemperature: {:.1}°C", time.format("%H:%M:%S"), value.y) })
         .x_axis_formatter(|mark: GridMark, _, _| { let time = DateTime::from_timestamp(mark.value as i64, 0).unwrap_or_default().with_timezone(&Local); time.format("%H:%M").to_string() })
         .y_axis_formatter(|mark: GridMark, _, _| format!("{:.1}°C", mark.value));
     if app.reset_plot { plot = plot.reset(); }
@@ -274,12 +274,12 @@ fn draw_temperature_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egu
         if (max - min).abs() < f32::EPSILON { plot = plot.include_y(min - 0.5).include_y(max + 0.5); }
     }
 
-    // OPRAVA: Výsledek se už neukládá do proměnné
+    // FIX: Result is no longer stored in a variable
     plot.show(ui, |plot_ui| {
-        // křivka
+        // line
         plot_ui.line(temp_line);
 
-        // barevné body podle hodnoty (-10 až 50 °C)
+        // colored points by value (-10 to 50 °C)
         for p in app.history.iter() {
             let x = p.timestamp.timestamp() as f64;
             let y = p.temp as f64;
@@ -300,10 +300,10 @@ fn draw_temperature_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egu
                 let closest_point = app.history.iter().min_by_key(|p| (p.timestamp.timestamp() as f64 - pos.x).abs() as u64);
                 if let Some(point) = closest_point {
                     if (point.temp as f64 - pos.y).abs() < 1.0 {
-                        let text_to_copy = format!("Čas: {}, Teplota: {:.1}°C", point.timestamp.format("%H:%M:%S"), point.temp);
+                        let text_to_copy = format!("Time: {}, Temperature: {:.1}°C", point.timestamp.format("%H:%M:%S"), point.temp);
                         ctx.output_mut(|o| o.copied_text = text_to_copy.clone());
-                        app.toast_message = Some(("Zkopírováno do schránky!".to_owned(), Instant::now()));
-                        info!("Zkopírováno do schránky: {}", text_to_copy);
+                        app.toast_message = Some(("Copied to clipboard!".to_owned(), Instant::now()));
+                        info!("Copied to clipboard: {}", text_to_copy);
                     }
                 }
             }
@@ -319,7 +319,7 @@ fn draw_humidity_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egui::
     let mut plot = Plot::new("humidity_plot").height(ui.available_height()).width(ui.available_width())
         .link_axis(egui::Id::new("linked_plots"), true, false).show_background(false).allow_drag(true).allow_zoom(true)
         .auto_bounds(egui::Vec2b::new(true, true)).show_axes([true, true])
-        .label_formatter(|_name, value| { let time = DateTime::from_timestamp(value.x as i64, 0).unwrap_or_default().with_timezone(&Local); format!("Čas: {}\nVlhkost: {:.0}%", time.format("%H:%M:%S"), value.y) })
+        .label_formatter(|_name, value| { let time = DateTime::from_timestamp(value.x as i64, 0).unwrap_or_default().with_timezone(&Local); format!("Time: {}\nHumidity: {:.0}%", time.format("%H:%M:%S"), value.y) })
         .x_axis_formatter(|mark: GridMark, _, _| { let time = DateTime::from_timestamp(mark.value as i64, 0).unwrap_or_default().with_timezone(&Local); time.format("%H:%M").to_string() })
         .y_axis_formatter(|mark: GridMark, _, _| format!("{:.0}%", mark.value));
     if app.reset_plot { plot = plot.reset(); }
@@ -328,10 +328,10 @@ fn draw_humidity_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egui::
     }
     
     plot.show(ui, |plot_ui| {
-        // křivka
+        // line
         plot_ui.line(hum_line);
 
-        // barevné body podle hodnoty (0 až 100 %)
+        // colored points by value (0 to 100 %)
         for p in app.history.iter() {
             let x = p.timestamp.timestamp() as f64;
             let y = p.hum as f64;
@@ -352,10 +352,10 @@ fn draw_humidity_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egui::
                 let closest_point = app.history.iter().min_by_key(|p| (p.timestamp.timestamp() as f64 - pos.x).abs() as u64);
                 if let Some(point) = closest_point {
                     if (point.hum as f64 - pos.y).abs() < 2.0 {
-                        let text_to_copy = format!("Čas: {}, Vlhkost: {}%", point.timestamp.format("%H:%M:%S"), point.hum);
+                        let text_to_copy = format!("Time: {}, Humidity: {}%", point.timestamp.format("%H:%M:%S"), point.hum);
                         ctx.output_mut(|o| o.copied_text = text_to_copy.clone());
-                        app.toast_message = Some(("Zkopírováno do schránky!".to_owned(), Instant::now()));
-                        info!("Zkopírováno do schránky: {}", text_to_copy);
+                        app.toast_message = Some(("Copied to clipboard!".to_owned(), Instant::now()));
+                        info!("Copied to clipboard: {}", text_to_copy);
                     }
                 }
             }
@@ -364,14 +364,14 @@ fn draw_humidity_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egui::
 }
 
 
-// --- I/O, logovací a background funkce ---
-// (zde je zbytek kódu, který se nemění)
+// --- I/O, logging and background functions ---
+// (rest of the unchanged code)
 // ...
 fn get_daily_log_filename() -> String { Local::now().format("log_%Y-%m-%d.csv").to_string() }
 fn draw_temperature_info(ui: &mut egui::Ui, history: &VecDeque<HistoryPoint>, config: &Config) {
     let temp_min = history.iter().map(|p| p.temp).min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal)).unwrap_or(0.0);
     let temp_max = history.iter().map(|p| p.temp).max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal)).unwrap_or(0.0);
-    ui.label(egui::RichText::new("Teplota").size(22.0).color(egui::Color32::GRAY));
+    ui.label(egui::RichText::new("Temperature").size(22.0).color(egui::Color32::GRAY));
     if let Some(point) = history.back() {
         let current_temp = point.temp;
         let mut color = egui::Color32::from_rgb(255, 100, 100);
@@ -384,7 +384,7 @@ fn draw_temperature_info(ui: &mut egui::Ui, history: &VecDeque<HistoryPoint>, co
 fn draw_humidity_info(ui: &mut egui::Ui, history: &VecDeque<HistoryPoint>) {
     let hum_min = history.iter().map(|p| p.hum).min().unwrap_or(0);
     let hum_max = history.iter().map(|p| p.hum).max().unwrap_or(0);
-    ui.label(egui::RichText::new("Vlhkost").size(22.0).color(egui::Color32::GRAY));
+    ui.label(egui::RichText::new("Humidity").size(22.0).color(egui::Color32::GRAY));
     if let Some(point) = history.back() {
         ui.label(egui::RichText::new(format!("{}%", point.hum)).size(42.0).color(egui::Color32::from_rgb(100, 100, 255)));
     } else { ui.label(egui::RichText::new("N/A").size(32.0)); }
@@ -392,18 +392,18 @@ fn draw_humidity_info(ui: &mut egui::Ui, history: &VecDeque<HistoryPoint>) {
 }
 
 fn draw_scan_metadata(ui: &mut egui::Ui, last_data: &Option<BleDataPoint>, status: &str) {
-    ui.horizontal(|ui| { ui.label(egui::RichText::new("Stav:").color(egui::Color32::GRAY)); ui.label(status); });
+    ui.horizontal(|ui| { ui.label(egui::RichText::new("Status:").color(egui::Color32::GRAY)); ui.label(status); });
     if let Some(data) = last_data {
-        ui.horizontal(|ui| { ui.label(egui::RichText::new("Aktualizace:").size(17.0).color(egui::Color32::GRAY)); ui.label(data.timestamp.format("%H:%M:%S").to_string()); });
+        ui.horizontal(|ui| { ui.label(egui::RichText::new("Updated:").size(17.0).color(egui::Color32::GRAY)); ui.label(data.timestamp.format("%H:%M:%S").to_string()); });
         ui.horizontal(|ui| { ui.label(egui::RichText::new("RSSI:").size(17.0).color(egui::Color32::GRAY)); if let Some(rssi) = data.rssi { ui.label(format!("{} dBm", rssi)); } else { ui.label("N/A"); }});
     }
 }
 
 fn draw_data_details(ui: &mut egui::Ui, last_data: &Option<BleDataPoint>, csv_ok: bool) {
     if let Some(data) = last_data {
-        ui.horizontal(|ui| { ui.label(egui::RichText::new("ID Zařízení:").size(17.0).color(egui::Color32::GRAY)); ui.label(data.device_id.to_string()); });
+        ui.horizontal(|ui| { ui.label(egui::RichText::new("Device ID:").size(17.0).color(egui::Color32::GRAY)); ui.label(data.device_id.to_string()); });
         ui.horizontal(|ui| { ui.label(egui::RichText::new("Raw data:").size(17.0).color(egui::Color32::GRAY)); ui.label(data.raw_data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")); });
-        ui.horizontal(|ui| { ui.label(egui::RichText::new("Zápis CSV:").size(17.0).color(egui::Color32::GRAY)); if csv_ok { ui.label(egui::RichText::new("OK").color(egui::Color32::GREEN)); } else { ui.label(egui::RichText::new("Chyba").color(egui::Color32::RED)); } });
+        ui.horizontal(|ui| { ui.label(egui::RichText::new("CSV Write:").size(17.0).color(egui::Color32::GRAY)); if csv_ok { ui.label(egui::RichText::new("OK").color(egui::Color32::GREEN)); } else { ui.label(egui::RichText::new("Error").color(egui::Color32::RED)); } });
     }
 }
 
@@ -411,7 +411,7 @@ fn log_to_csv(temp: f32, hum: u8) -> Result<(), csv::Error> {
     let filename = get_daily_log_filename(); let file_exists = Path::new(&filename).exists();
     let file = fs::OpenOptions::new().append(true).create(true).open(filename)?;
     let mut wtr = csv::WriterBuilder::new().delimiter(b';').from_writer(file);
-    if !file_exists { wtr.write_record(&["Datum", "Cas", "Teplota", "Vlhkost"])?; }
+    if !file_exists { wtr.write_record(&["Date", "Time", "Temperature", "Humidity"])?; }
     let now = Local::now(); let temp_str = format!("{:.1}", temp).replace('.', ",");
     wtr.write_record(&[ now.format("%Y.%m.%d").to_string(), now.format("%H:%M:%S").to_string(), temp_str, hum.to_string() ])?;
     wtr.flush()?; Ok(())
@@ -419,14 +419,14 @@ fn log_to_csv(temp: f32, hum: u8) -> Result<(), csv::Error> {
 
 fn load_history_from_csv() -> VecDeque<HistoryPoint> {
     let config = load_config();
-    info!("Načítám historii z CSV. Načíst vše: {}", config.load_all_history);
+    info!("Loading history from CSV. Load all: {}", config.load_all_history);
     let capacity = if config.load_all_history { 0 } else { MAX_HISTORY_POINTS };
     let mut history = VecDeque::with_capacity(capacity);
     let filename = get_daily_log_filename();
     if let Ok(file) = fs::File::open(&filename) {
         let mut rdr = csv::ReaderBuilder::new().delimiter(b';').from_reader(file);
         let all_records: Vec<_> = rdr.records().filter_map(Result::ok).collect();
-        info!("Nalezeno {} záznamů v souboru '{}'.", all_records.len(), filename);
+        info!("Found {} records in file '{}'.", all_records.len(), filename);
         let records_to_load: Box<dyn Iterator<Item = &csv::StringRecord>> = if config.load_all_history {
             Box::new(all_records.iter())
         } else {
@@ -443,13 +443,13 @@ fn load_history_from_csv() -> VecDeque<HistoryPoint> {
                 }
             }
         }
-        info!("Načteno {} bodů do historie grafu.", history.len());
-    } else { warn!("Soubor s historií '{}' nenalezen.", filename); }
+        info!("Loaded {} points into history.", history.len());
+    } else { warn!("History file '{}' not found.", filename); }
     history
 }
 
 fn load_config() -> Config {
-    info!("Načítám konfiguraci z '{}'.", CONFIG_FILE);
+    info!("Loading configuration from '{}'.", CONFIG_FILE);
     fs::read_to_string(CONFIG_FILE).ok().and_then(|c| serde_json::from_str::<Config>(&c).ok()).unwrap_or_default()
 }
 fn save_config(config: &Config) {
@@ -457,7 +457,7 @@ fn save_config(config: &Config) {
 }
 
 fn background_data_processor(rx: mpsc::Receiver<AppMessage>, tx: mpsc::Sender<AppMessage>, shared_config: Arc<Mutex<Config>>) {
-    info!("Spouštím background procesor pro data.");
+    info!("Starting background data processor.");
     let mut last_save_time: Option<Instant> = None;
     for received in rx {
         match received {
@@ -468,23 +468,23 @@ fn background_data_processor(rx: mpsc::Receiver<AppMessage>, tx: mpsc::Sender<Ap
                     now.duration_since(last).as_secs() >= config.duplicate_threshold_secs
                 });
                 if should_save {
-                    info!("Zapisuji data do CSV: teplota={}, vlhkost={}", data_point.temp, data_point.hum);
+                    info!("Writing data to CSV: temp={}, hum={}", data_point.temp, data_point.hum);
                     let write_ok = log_to_csv(data_point.temp, data_point.hum).is_ok();
-                    if !write_ok { error!("Nepodařilo se zapsat do CSV souboru!"); }
+                    if !write_ok { error!("Failed to write to CSV file!"); }
                     let _ = tx.send(AppMessage::CsvWriteStatus(write_ok));
                     last_save_time = Some(now);
-                    if tx.send(AppMessage::NewData(data_point)).is_err() { error!("GUI kanál je uzavřen, ukončuji background procesor."); break; }
+                    if tx.send(AppMessage::NewData(data_point)).is_err() { error!("GUI channel closed, terminating background processor."); break; }
                 } else {
-                    debug!("Přeskakuji zápis i zobrazení v grafu (duplikát).");
+                    debug!("Skipping write and UI update (duplicate).");
                 }
             },
             AppMessage::StatusUpdate(status) => {
-                if tx.send(AppMessage::StatusUpdate(status)).is_err() { error!("GUI kanál je uzavřen, ukončuji background procesor."); break; }
+                if tx.send(AppMessage::StatusUpdate(status)).is_err() { error!("GUI channel closed, terminating background processor."); break; }
             },
             _ => {}
         }
     }
-    info!("Background procesor ukončen.");
+    info!("Background processor terminated.");
 }
 
 
@@ -494,29 +494,29 @@ fn main() -> Result<(), eframe::Error> {
         .format(|buf, record| { writeln!(buf, "[{}] [{}] - {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), record.level(), record.args()) })
         .filter(None, log::LevelFilter::Info)
         .init();
-    info!("Logger inicializován, spouštím aplikaci...");
+    info!("Logger initialized, starting application...");
     let viewport = egui::ViewportBuilder::default().with_inner_size([850.0, 450.0]).with_decorations(true).with_transparent(true).with_app_id("temp_monitor_sobes");
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("Teploměr", options, Box::new(|cc| Box::new(TempMonitorApp::new(cc))))
+    eframe::run_native("Temperature Monitor", options, Box::new(|cc| Box::new(TempMonitorApp::new(cc))))
 }
 
 async fn bluetooth_scanner(tx: mpsc::Sender<AppMessage>, shared_config: Arc<Mutex<Config>>) {
-    info!("Spouštím hlavní smyčku Bluetooth scanneru.");
+    info!("Starting main Bluetooth scanner loop.");
     loop {
         let current_config = { if let Ok(config) = shared_config.lock() { config.clone() } else { Config::default() } };
-        debug!("Nová iterace scanneru, MAC: {}", current_config.target_mac);
+        debug!("New scanner iteration, MAC: {}", current_config.target_mac);
         let manager = match Manager::new().await {
             Ok(m) => m,
             Err(e) => {
-                error!("Chyba při inicializaci BT manažeru: {}", e);
-                let _ = tx.send(AppMessage::StatusUpdate("Chyba: BT adaptér nenalezen".into()));
+                error!("Error initializing BT manager: {}", e);
+                let _ = tx.send(AppMessage::StatusUpdate("Error: BT adapter not found".into()));
                 thread::sleep(Duration::from_secs(if current_config.continuous_mode { 1 } else { current_config.scan_pause_secs }));
                 continue;
             }
         };
         if let Some(central) = manager.adapters().await.unwrap_or_default().into_iter().next() {
-            let status_msg = if current_config.continuous_mode { "Skenuji (kontinuální režim)..." } else { "Skenuji..." };
-            info!("Zahajuji skenování na adaptéru...");
+            let status_msg = if current_config.continuous_mode { "Scanning (continuous mode)..." } else { "Scanning..." };
+            info!("Starting scan on adapter...");
             let _ = tx.send(AppMessage::StatusUpdate(status_msg.into()));
             if central.start_scan(ScanFilter::default()).await.is_ok() {
                 let scan_duration = if current_config.continuous_mode { 60 } else { current_config.scan_timeout_secs };
@@ -527,13 +527,13 @@ async fn bluetooth_scanner(tx: mpsc::Sender<AppMessage>, shared_config: Arc<Mute
                             if let Ok(p) = central.peripheral(&id).await {
                                 if let Ok(Some(props)) = p.properties().await {
                                     if props.address.to_string().eq_ignore_ascii_case(&current_config.target_mac) {
-                                        info!("Cílové zařízení nalezeno: {}", props.address);
+                                        info!("Target device found: {}", props.address);
                                         if let Some((company_id, data)) = props.manufacturer_data.iter().next() {
                                             if data.len() >= 2 {
                                                 let temp = i16::from_le_bytes([(*company_id >> 8) as u8, data[0]]) as f32 / 10.0;
                                                 let hum = data[1];
                                                 let data_point = BleDataPoint { timestamp: Local::now(), temp, hum, device_id: id.to_string(), rssi: props.rssi, raw_data: data.clone() };
-                                                info!("Úspěšně parsována data, posílám do procesoru: T={:.1}C, H={}%", temp, hum);
+                                                info!("Successfully parsed data, sending to processor: T={:.1}C, H={}%", temp, hum);
                                                 if tx.send(AppMessage::NewData(data_point)).is_err() { break; }
                                                 if !current_config.continuous_mode { return; }
                                             }
@@ -544,13 +544,13 @@ async fn bluetooth_scanner(tx: mpsc::Sender<AppMessage>, shared_config: Arc<Mute
                         }
                     }
                 }).await;
-                info!("Skenování ukončeno (timeout).");
+                info!("Scanning finished (timeout).");
                 let _ = central.stop_scan().await;
             }
         }
-        let _ = tx.send(AppMessage::StatusUpdate("Čekám...".into()));
+        let _ = tx.send(AppMessage::StatusUpdate("Waiting...".into()));
         let pause_duration = if current_config.continuous_mode { 1 } else { current_config.scan_pause_secs };
-        debug!("Pauza na {} sekund.", pause_duration);
+        debug!("Sleeping for {} seconds.", pause_duration);
         thread::sleep(Duration::from_secs(pause_duration));
     }
 }
