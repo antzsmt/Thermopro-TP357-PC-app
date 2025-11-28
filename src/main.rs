@@ -274,7 +274,6 @@ fn draw_temperature_graph(app: &mut TempMonitorApp, ui: &mut egui::Ui, ctx: &egu
         if (max - min).abs() < f32::EPSILON { plot = plot.include_y(min - 0.5).include_y(max + 0.5); }
     }
 
-    // FIX: Result is no longer stored in a variable
     plot.show(ui, |plot_ui| {
         // line
         plot_ui.line(temp_line);
@@ -408,13 +407,27 @@ fn draw_data_details(ui: &mut egui::Ui, last_data: &Option<BleDataPoint>, csv_ok
 }
 
 fn log_to_csv(temp: f32, hum: u8) -> Result<(), csv::Error> {
-    let filename = get_daily_log_filename(); let file_exists = Path::new(&filename).exists();
-    let file = fs::OpenOptions::new().append(true).create(true).open(filename)?;
-    let mut wtr = csv::WriterBuilder::new().delimiter(b';').from_writer(file);
-    if !file_exists { wtr.write_record(&["Date", "Time", "Temperature", "Humidity"])?; }
-    let now = Local::now(); let temp_str = format!("{:.1}", temp).replace('.', ",");
-    wtr.write_record(&[ now.format("%Y.%m.%d").to_string(), now.format("%H:%M:%S").to_string(), temp_str, hum.to_string() ])?;
-    wtr.flush()?; Ok(())
+    let filename = get_daily_log_filename();
+    let path = Path::new(&filename);
+    let file_exists = path.exists();
+    // Write header when file is new or empty
+    let write_header = !file_exists || fs::metadata(&filename).map(|m| m.len() == 0).unwrap_or(true);
+
+    // Open file for append
+    let file = fs::OpenOptions::new().append(true).create(true).open(&filename)?;
+    // Use comma delimiter and dot decimal (ISO-style) — broadly Excel-friendly
+    let mut wtr = csv::WriterBuilder::new().delimiter(b',').from_writer(file);
+
+    if write_header {
+        wtr.write_record(&["DateTime", "Temperature", "Humidity"])?;
+    }
+
+    let now = Local::now();
+    let temp_str = format!("{:.1}", temp); // dot decimal
+    let dt = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+    wtr.write_record(&[dt, temp_str, hum.to_string()])?;
+    wtr.flush()?;
+    Ok(())
 }
 
 fn load_history_from_csv() -> VecDeque<HistoryPoint> {
@@ -423,28 +436,67 @@ fn load_history_from_csv() -> VecDeque<HistoryPoint> {
     let capacity = if config.load_all_history { 0 } else { MAX_HISTORY_POINTS };
     let mut history = VecDeque::with_capacity(capacity);
     let filename = get_daily_log_filename();
-    if let Ok(file) = fs::File::open(&filename) {
-        let mut rdr = csv::ReaderBuilder::new().delimiter(b';').from_reader(file);
-        let all_records: Vec<_> = rdr.records().filter_map(Result::ok).collect();
-        info!("Found {} records in file '{}'.", all_records.len(), filename);
-        let records_to_load: Box<dyn Iterator<Item = &csv::StringRecord>> = if config.load_all_history {
-            Box::new(all_records.iter())
+
+    if !Path::new(&filename).exists() {
+        warn!("History file '{}' not found.", filename);
+        return history;
+    }
+
+    // Try comma first, fall back to semicolon (backwards compatibility)
+    let all_records: Vec<csv::StringRecord> = if let Ok(file) = fs::File::open(&filename) {
+        // try comma
+        let mut rdr = csv::ReaderBuilder::new().delimiter(b',').from_reader(file);
+        let records: Vec<_> = rdr.records().filter_map(Result::ok).collect();
+        if !records.is_empty() {
+            records
         } else {
-            let start_index = all_records.len().saturating_sub(MAX_HISTORY_POINTS);
-            Box::new(all_records.iter().skip(start_index))
-        };
-        for result in records_to_load {
-            if let (Some(date_str), Some(time_str), Some(temp_str), Some(hum_str)) = (result.get(0), result.get(1), result.get(2), result.get(3)) {
-                let datetime_str = format!("{} {}", date_str, time_str);
-                if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&datetime_str, "%Y.%m.%d %H:%M:%S") {
-                    if let (Ok(temp), Ok(hum)) = (temp_str.replace(',', ".").parse(), hum_str.parse()) {
-                        history.push_back(HistoryPoint { timestamp: naive_dt.and_local_timezone(Local).unwrap(), temp, hum });
+            // reopen and try semicolon
+            let file2 = fs::File::open(&filename).expect("failed to reopen file");
+            let mut rdr2 = csv::ReaderBuilder::new().delimiter(b';').from_reader(file2);
+            rdr2.records().filter_map(Result::ok).collect()
+        }
+    } else {
+        vec![]
+    };
+
+    info!("Found {} records in file '{}'.", all_records.len(), filename);
+
+    let records_to_load: Box<dyn Iterator<Item = &csv::StringRecord>> = if config.load_all_history {
+        Box::new(all_records.iter())
+    } else {
+        let start_index = all_records.len().saturating_sub(MAX_HISTORY_POINTS);
+        Box::new(all_records.iter().skip(start_index))
+    };
+
+    for record in records_to_load {
+        // New format: DateTime,Temperature,Humidity
+        if record.len() >= 3 {
+            if let Some(dt_str) = record.get(0) {
+                if let Ok(naive_dt) = NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S") {
+                    if let (Some(temp_str), Some(hum_str)) = (record.get(1), record.get(2)) {
+                        if let (Ok(temp), Ok(hum)) = (temp_str.replace(',', ".").parse(), hum_str.parse()) {
+                            history.push_back(HistoryPoint { timestamp: naive_dt.and_local_timezone(Local).unwrap(), temp, hum });
+                            continue;
+                        }
                     }
                 }
             }
         }
-        info!("Loaded {} points into history.", history.len());
-    } else { warn!("History file '{}' not found.", filename); }
+
+        // Fallback to old format: Date, Time, Temp, Hum (semicolon-style legacy)
+        if let (Some(date_str), Some(time_str), Some(temp_str), Some(hum_str)) =
+            (record.get(0), record.get(1), record.get(2), record.get(3))
+        {
+            let datetime_str = format!("{} {}", date_str, time_str);
+            if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&datetime_str, "%Y.%m.%d %H:%M:%S") {
+                if let (Ok(temp), Ok(hum)) = (temp_str.replace(',', ".").parse(), hum_str.parse()) {
+                    history.push_back(HistoryPoint { timestamp: naive_dt.and_local_timezone(Local).unwrap(), temp, hum });
+                }
+            }
+        }
+    }
+
+    info!("Loaded {} points into history.", history.len());
     history
 }
 
